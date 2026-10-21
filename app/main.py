@@ -1,6 +1,9 @@
 
-from fastapi import FastAPI
+from fastapi import FastAPI,Depends
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
+from app.db.dependencies import get_db
 app = FastAPI(
     title="AKMORI",
     description="Intelligent Work & Approval Management System",
@@ -20,4 +23,12 @@ def home():
 def health_check():
     return {
         "status": "healthy",
+    }
+@app.get("/health/database")
+def database_health(db: Session = Depends(get_db)):
+    db.execute(text("SELECT 1"))
+
+    return {
+        "status": "healthy",
+        "database": "connected",
     }
