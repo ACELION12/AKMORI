@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.db.dependencies import get_db
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError,SQLAlchemyError
 
 from app.services.user_service import create_user
 from app.schemas.user import UserCreate
@@ -90,7 +90,8 @@ def test_create_user_rejects_duplicate_email():
         "detail": "A user with this email already exists."
     }
 
-def test_create_user_rolls_back_on_integrity_error():
+
+def test_create_user_rolls_back_on_unrelated_integrity_error():
     db = MagicMock()
     user_data = UserCreate(
         full_name="Test User",
@@ -101,13 +102,90 @@ def test_create_user_rolls_back_on_integrity_error():
     db.commit.side_effect = IntegrityError(
         "INSERT",
         {},
-        Exception("Unique constraint violation"),
+        Exception("Unrelated constraint violation"),
     )
 
-    try:
+    with pytest.raises(IntegrityError):
         create_user(db, user_data)
-        assert False, "Expected ValueError was not raised"
-    except ValueError as exc:
-        assert str(exc) == "A user with this email already exists."
 
     db.rollback.assert_called_once()
+
+
+def test_get_user():
+    with patch("app.api.users.get_user") as mock_get_user:
+        mock_get_user.return_value = MagicMock(
+            id=1,
+            full_name="Test User",
+            email="test@example.com",
+            is_active=True,
+        )
+
+        response = client.get("/users/1")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == 1
+    assert response.json()["email"] == "test@example.com"
+
+
+def test_get_user_not_found():
+    with patch("app.api.users.get_user", return_value=None):
+        response = client.get("/users/999")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "User not found."
+
+
+def test_list_users():
+    with patch("app.api.users.list_users") as mock_list_users:
+        mock_list_users.return_value = [
+            MagicMock(
+                id=1,
+                full_name="Test User",
+                email="test@example.com",
+                is_active=True,
+            )
+        ]
+
+        response = client.get("/users/")
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    mock_list_users.assert_called_once()
+
+
+def test_list_users_passes_pagination():
+    with patch("app.api.users.list_users") as mock_list_users:
+        mock_list_users.return_value = []
+
+        response = client.get("/users/?skip=20&limit=10")
+
+    assert response.status_code == 200
+    mock_list_users.assert_called_once()
+    assert mock_list_users.call_args.kwargs == {
+        "skip": 20,
+        "limit": 10,
+    }
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["?skip=-1", "?limit=0", "?limit=101"],
+)
+def test_list_users_rejects_invalid_pagination(query):
+    with patch("app.api.users.list_users") as mock_list_users:
+        response = client.get(f"/users/{query}")
+
+    assert response.status_code == 422
+    mock_list_users.assert_not_called()
+
+
+def test_list_users_handles_database_error():
+    with patch(
+        "app.api.users.list_users",
+        side_effect=SQLAlchemyError("internal database details"),
+    ):
+        response = client.get("/users/")
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Unable to retrieve users."
+    assert "internal database details" not in response.text
