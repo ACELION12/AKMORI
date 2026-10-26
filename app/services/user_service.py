@@ -1,10 +1,14 @@
 
+from pwdlib import PasswordHash
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.user import User
 from app.schemas.user import UserCreate
+
+
+password_hash = PasswordHash.recommended()
 
 
 def _is_duplicate_email_error(exc: IntegrityError) -> bool:
@@ -32,6 +36,9 @@ def create_user(db: Session, user_data: UserCreate) -> User:
     user = User(
         full_name=user_data.full_name,
         email=email,
+        hashed_password=password_hash.hash(
+            user_data.password.get_secret_value()
+        ),
     )
 
     try:

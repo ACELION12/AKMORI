@@ -1,16 +1,14 @@
 
 from unittest.mock import MagicMock, patch
 
-from fastapi.testclient import TestClient
-
-from app.main import app
-from app.db.dependencies import get_db
-from sqlalchemy.exc import IntegrityError,SQLAlchemyError
-
-from app.services.user_service import create_user
-from app.schemas.user import UserCreate
-
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+
+from app.db.dependencies import get_db
+from app.main import app
+from app.schemas.user import UserCreate
+from app.services.user_service import create_user, password_hash
 
 
 client = TestClient(app)
@@ -45,6 +43,7 @@ def test_create_user():
             json={
                 "full_name": "Test User",
                 "email": "test@example.com",
+                "password": "StrongPass123!",
             },
         )
 
@@ -55,6 +54,8 @@ def test_create_user():
         "email": "test@example.com",
         "is_active": True,
     }
+    assert "password" not in response.json()
+    assert "hashed_password" not in response.json()
 
 
 def test_create_user_rejects_invalid_email():
@@ -64,6 +65,22 @@ def test_create_user_rejects_invalid_email():
             json={
                 "full_name": "Test User",
                 "email": "not-an-email",
+                "password": "StrongPass123!",
+            },
+        )
+
+    assert response.status_code == 422
+    mock_create_user.assert_not_called()
+
+
+def test_create_user_rejects_short_password():
+    with patch("app.api.users.create_user") as mock_create_user:
+        response = client.post(
+            "/users/",
+            json={
+                "full_name": "Test User",
+                "email": "test@example.com",
+                "password": "short",
             },
         )
 
@@ -82,6 +99,7 @@ def test_create_user_rejects_duplicate_email():
             json={
                 "full_name": "Test User",
                 "email": "test@example.com",
+                "password": "StrongPass123!",
             },
         )
 
@@ -96,6 +114,7 @@ def test_create_user_rolls_back_on_unrelated_integrity_error():
     user_data = UserCreate(
         full_name="Test User",
         email="test@example.com",
+        password="StrongPass123!",
     )
 
     db.scalar.return_value = None
@@ -109,6 +128,26 @@ def test_create_user_rolls_back_on_unrelated_integrity_error():
         create_user(db, user_data)
 
     db.rollback.assert_called_once()
+
+
+def test_create_user_stores_password_hash():
+    db = MagicMock()
+    db.scalar.return_value = None
+    user_data = UserCreate(
+        full_name="Test User",
+        email="test@example.com",
+        password="StrongPass123!",
+    )
+
+    created_user = create_user(db, user_data)
+
+    assert created_user.hashed_password != "StrongPass123!"
+    assert password_hash.verify(
+        "StrongPass123!",
+        created_user.hashed_password,
+    )
+    db.add.assert_called_once_with(created_user)
+    db.commit.assert_called_once()
 
 
 def test_get_user():
@@ -125,6 +164,7 @@ def test_get_user():
     assert response.status_code == 200
     assert response.json()["id"] == 1
     assert response.json()["email"] == "test@example.com"
+    assert "hashed_password" not in response.json()
 
 
 def test_get_user_not_found():
@@ -150,6 +190,7 @@ def test_list_users():
 
     assert response.status_code == 200
     assert len(response.json()) == 1
+    assert "hashed_password" not in response.text
     mock_list_users.assert_called_once()
 
 
